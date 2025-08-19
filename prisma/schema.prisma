@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://admin:12345678@90.156.169.29:5435/office_db?schema=public"
+}
+
+enum LayerType {
+  firesafe
+  custom
+}
+
+enum ZoneStatus { 
+  free 
+  occupied 
+}
+enum Role {
+  ADMIN
+  MODERATOR
+  USER
+}
+
+// ==== Пользователи ====
+model User {
+  id           Int      @id @default(autoincrement())
+  email     String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Office {
+  id     Int     @id @default(autoincrement())
+  name    String
+  address String
+  city    String
+  country String
+  floors Floor[]
+}
+
+model Floor {
+  id               Int     @id @default(autoincrement())
+  officeId         Int
+  number           Int
+  planImageUrl     String?
+  firesafeImageUrl String?
+
+  office Office @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  layers Layer[]
+  zones  Zone[]   @relation("FloorZones")
+
+  // Остатки инвентаря по этажу
+  inventory FloorInventory[]
+
+  @@unique([officeId, number])
+}
+
+model Layer {
+  id     Int       @id @default(autoincrement())
+  floorId Int
+  name   String
+  type   LayerType
+
+  floor Floor @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zones Zone[]
+}
+
+model Zone {
+  id          Int        @id @default(autoincrement())
+  layerId     Int
+  floorId     Int        // удобно иметь доступ к floorId без join по layer
+  name        String
+  description String     @default("")
+  status      ZoneStatus @default(free)
+  coordinates Json       // массив чисел [x1,y1,x2,y2,...] — храним как JSON
+
+  layer Layer @relation(fields: [layerId], references: [id], onDelete: Cascade)
+  floor Floor @relation("FloorZones", fields: [floorId], references: [id], onDelete: Cascade)
+
+  // Привязанный инвентарь
+  zoneInventory ZoneInventory[]
+  objects       ZoneObject[]
+}
+
+model InventoryCatalog {
+  id          String   @id            // "chair", "table", ...
+  displayName String
+  iconKey     String
+  category    String?  // "furniture" | "device" | "kitchen" | "room" | "infra" | "safety"
+
+  items FloorInventory[]
+}
+
+model FloorInventory {
+  id        Int               @id @default(autoincrement())
+  floorId   Int
+  catalogId String
+  count     Int               @default(0)
+
+  floor   Floor            @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  catalog InventoryCatalog @relation(fields: [catalogId], references: [id])
+
+  zoneItems ZoneInventory[]
+
+  @@unique([floorId, catalogId]) // один тип предмета на этаже — одна строка
+}
+
+model ZoneInventory {
+  id               Int  @id @default(autoincrement())
+  zoneId           Int
+  floorInventoryId Int
+  quantity         Int  @default(0)
+
+  zone           Zone           @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  floorInventory FloorInventory @relation(fields: [floorInventoryId], references: [id], onDelete: Cascade)
+  objects        ZoneObject[]
+
+  @@unique([zoneId, floorInventoryId], name: "zoneId_floorInventoryId")
+}
+
+model ZoneObject {
+  id              Int  @id @default(autoincrement())
+  zoneId          Int
+  zoneInventoryId Int
+  x               Float
+  y               Float
+  rotation        Float @default(0)
+
+  zone          Zone          @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  zoneInventory ZoneInventory @relation(fields: [zoneInventoryId], references: [id], onDelete: Cascade)
+
+  @@index([zoneInventoryId])
+}
