@@ -101,7 +101,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // ===================== FLOORS =====================
 // GET /offices/:officeId/floors  -> { floors:[{id, number}] }
-app.get("/offices/:officeId/floors", async (req, res, next) => {
+app.get("/offices/:officeId/floors", authRequired, async (req, res, next) => {
   try {
     const officeId = Number(req.params.officeId);
     const floors = await prisma.floor.findMany({
@@ -117,7 +117,7 @@ app.get("/offices/:officeId/floors", async (req, res, next) => {
 
 // POST /offices/:officeId/floors  { floorNumber } -> { floorId }
 // + автоматически создаём слой type='firesafe'
-app.post("/offices/:officeId/floors", async (req, res, next) => {
+app.post("/offices/:officeId/floors", authRequired, async (req, res, next) => {
   try {
     const officeId = Number(req.params.officeId);
     const { floorNumber } = req.body;
@@ -150,28 +150,33 @@ app.post("/offices/:officeId/floors", async (req, res, next) => {
 });
 
 // GET /offices/:officeId/floors/:floorId -> { id, number, imageUrl }
-app.get("/offices/:officeId/floors/:floorId", async (req, res, next) => {
-  try {
-    const officeId = Number(req.params.officeId);
-    const floorId = Number(req.params.floorId);
-    const floor = await prisma.floor.findFirst({
-      where: { id: floorId, officeId },
-      select: { id: true, number: true, planImageUrl: true },
-    });
-    if (!floor) return res.status(404).json({ error: "Floor not found" });
-    res.json({
-      id: floor.id,
-      number: floor.number,
-      imageUrl: floor.planImageUrl,
-    });
-  } catch (e) {
-    next(e);
+app.get(
+  "/offices/:officeId/floors/:floorId",
+  authRequired,
+  async (req, res, next) => {
+    try {
+      const officeId = Number(req.params.officeId);
+      const floorId = Number(req.params.floorId);
+      const floor = await prisma.floor.findFirst({
+        where: { id: floorId, officeId },
+        select: { id: true, number: true, planImageUrl: true },
+      });
+      if (!floor) return res.status(404).json({ error: "Floor not found" });
+      res.json({
+        id: floor.id,
+        number: floor.number,
+        imageUrl: floor.planImageUrl,
+      });
+    } catch (e) {
+      next(e);
+    }
   }
-});
+);
 
 // ========== PLAN IMAGE ==========
 app.post(
   "/offices/:officeId/floors/:floorId/plan-image",
+  authRequired,
   upload.single("image"),
   async (req, res, next) => {
     try {
@@ -191,6 +196,7 @@ app.post(
 );
 app.get(
   "/offices/:officeId/floors/:floorId/plan-image",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -211,6 +217,7 @@ app.get(
 // ========== FIRESAFE IMAGE ==========
 app.post(
   "/offices/:officeId/floors/:floorId/firesafe-image",
+  authRequired,
   upload.single("image"),
   async (req, res, next) => {
     try {
@@ -230,6 +237,7 @@ app.post(
 );
 app.get(
   "/offices/:officeId/floors/:floorId/firesafe-image",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -249,33 +257,38 @@ app.get(
 
 // ===================== LAYERS =====================
 // GET /offices/:officeId/floors/:floorId/layers -> { layers:[...] }
-app.get("/offices/:officeId/floors/:floorId/layers", async (req, res, next) => {
-  try {
-    const floorId = Number(req.params.floorId);
-    const floor = await prisma.floor.findUnique({
-      where: { id: floorId },
-      select: { firesafeImageUrl: true },
-    });
-    const layers = await prisma.layer.findMany({
-      where: { floorId },
-      select: { id: true, name: true, type: true },
-      orderBy: [{ type: "asc" }, { id: "asc" }],
-    });
-    const result = layers.map((l) => ({
-      id: l.id,
-      name: l.name,
-      type: l.type,
-      hasImage: l.type === "firesafe" ? !!floor?.firesafeImageUrl : undefined,
-    }));
-    res.json({ layers: result });
-  } catch (e) {
-    next(e);
+app.get(
+  "/offices/:officeId/floors/:floorId/layers",
+  authRequired,
+  async (req, res, next) => {
+    try {
+      const floorId = Number(req.params.floorId);
+      const floor = await prisma.floor.findUnique({
+        where: { id: floorId },
+        select: { firesafeImageUrl: true },
+      });
+      const layers = await prisma.layer.findMany({
+        where: { floorId },
+        select: { id: true, name: true, type: true },
+        orderBy: [{ type: "asc" }, { id: "asc" }],
+      });
+      const result = layers.map((l) => ({
+        id: l.id,
+        name: l.name,
+        type: l.type,
+        hasImage: l.type === "firesafe" ? !!floor?.firesafeImageUrl : undefined,
+      }));
+      res.json({ layers: result });
+    } catch (e) {
+      next(e);
+    }
   }
-});
+);
 
 // POST /offices/:officeId/floors/:floorId/layers { name } -> { layerId, name }
 app.post(
   "/offices/:officeId/floors/:floorId/layers",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -296,6 +309,7 @@ app.post(
 // GET /offices/:officeId/floors/:floorId/layers/:layerId
 app.get(
   "/offices/:officeId/floors/:floorId/layers/:layerId",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -342,6 +356,7 @@ app.get(
 // DELETE /offices/:officeId/floors/:floorId/layers/:layerId
 app.delete(
   "/offices/:officeId/floors/:floorId/layers/:layerId",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -365,6 +380,7 @@ app.delete(
 // POST /.../zones  { name?,description?,status?,coordinates:number[] } -> { zoneId }
 app.post(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones",
+  authRequired,
   async (req, res, next) => {
     try {
       const layerId = Number(req.params.layerId);
@@ -415,6 +431,7 @@ app.post(
 // PATCH /.../zones/:zoneId
 app.patch(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones/:zoneId",
+  authRequired,
   async (req, res, next) => {
     try {
       const layerId = Number(req.params.layerId);
@@ -458,6 +475,7 @@ app.patch(
 // DELETE /.../zones/:zoneId
 app.delete(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones/:zoneId",
+  authRequired,
   async (req, res, next) => {
     try {
       const layerId = Number(req.params.layerId);
@@ -476,7 +494,7 @@ app.delete(
 
 // ===================== INVENTORY CATALOG =====================
 // GET /inventory/catalog -> [{id,displayName,iconKey,category}]
-app.get("/inventory/catalog", async (_req, res, next) => {
+app.get("/inventory/catalog", authRequired, async (_req, res, next) => {
   try {
     const items = await prisma.inventoryCatalog.findMany({
       orderBy: [{ category: "asc" }, { displayName: "asc" }],
@@ -491,6 +509,7 @@ app.get("/inventory/catalog", async (_req, res, next) => {
 // GET /offices/:officeId/floors/:floorId/inventory -> [...include catalog]
 app.get(
   "/offices/:officeId/floors/:floorId/inventory",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -512,6 +531,7 @@ app.get(
 // GET /offices/:officeId/floors/:floorId/inventory/with-usage
 app.get(
   "/offices/:officeId/floors/:floorId/inventory/with-usage",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -553,6 +573,7 @@ app.get(
 // POST /offices/:officeId/floors/:floorId/inventory  { catalogId, count }
 app.post(
   "/offices/:officeId/floors/:floorId/inventory",
+  authRequired,
   async (req, res, next) => {
     try {
       const floorId = Number(req.params.floorId);
@@ -591,6 +612,7 @@ app.post(
 // PATCH /offices/:officeId/floors/:floorId/inventory/:id  { count? }
 app.patch(
   "/offices/:officeId/floors/:floorId/inventory/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -617,6 +639,7 @@ app.patch(
 // DELETE /offices/:officeId/floors/:floorId/inventory/:id
 app.delete(
   "/offices/:officeId/floors/:floorId/inventory/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -639,6 +662,7 @@ app.delete(
 // GET /offices/:officeId/floors/:floorId/zones/:zoneId/inventory
 app.get(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -660,6 +684,7 @@ app.get(
 // POST /offices/:officeId/floors/:floorId/zones/:zoneId/inventory  { floorInventoryId, quantity }
 app.post(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -727,6 +752,7 @@ app.post(
 // PATCH /offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id  { quantity }
 app.patch(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -775,6 +801,7 @@ app.patch(
 // DELETE /offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id
 app.delete(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -794,6 +821,7 @@ app.delete(
 // Список объектов зоны (с каталогом для иконок/названий)
 app.get(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -838,6 +866,7 @@ app.get(
 // Создать объект в зоне (проверка слотов: placed < quantity)
 app.post(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -901,6 +930,7 @@ app.post(
 // Обновить координаты / угол объекта
 app.patch(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -950,6 +980,7 @@ app.patch(
 // Удалить объект
 app.delete(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects/:id",
+  authRequired,
   async (req, res, next) => {
     try {
       const zoneId = Number(req.params.zoneId);
@@ -1074,7 +1105,7 @@ app.get("/me", authRequired, (req, res) => {
  */
 
 // GET /offices -> { offices: [...] }
-app.get("/offices", async (_req, res, next) => {
+app.get("/offices", authRequired, async (_req, res, next) => {
   try {
     const offices = await prisma.office.findMany({
       orderBy: [{ country: "asc" }, { city: "asc" }, { name: "asc" }],
