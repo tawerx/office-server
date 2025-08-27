@@ -5,6 +5,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = "postgresql://admin:12345678@90.156.169.29:5435/office_db?schema=public"
+  // url      = "postgresql://testuser:12345678@localhost:5432/office_maps_redactor?schema=public"
 }
 
 enum LayerType {
@@ -17,8 +18,8 @@ enum ZoneStatus {
   occupied 
 }
 enum Role {
-  ADMIN
-  MODERATOR
+  WORKSPACE_ADMIN
+  PROJECT_ADMIN
   USER
 }
 

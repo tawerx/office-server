@@ -11,15 +11,31 @@ import bcrypt from "bcrypt";
 
 dotenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = "1d"; // срок жизни токена
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+const JWT_EXPIRES_IN = "1d"; // срок жизни access-токена
 
-function signToken(user) {
-  return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
-  );
+/**
+ * Новый формат токена под фронт:
+ * {
+ *   sub: string,               // username (берём email как username)
+ *   role: 'USER' | 'WORKSPACE_ADMIN' | 'PROJECT_ADMIN',
+ *   perms?: string[],
+ *   type?: 'ACCESS',
+ *   iat?: number,
+ *   exp?: number
+ * }
+ */
+function signAccessToken(email, role, perms = []) {
+  const payload = {
+    sub: email,
+    role,
+    perms,
+    type: "ACCESS",
+  };
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: JWT_EXPIRES_IN,
+    algorithm: "HS256",
+  });
 }
 
 function authOptional(req, _res, next) {
@@ -29,7 +45,7 @@ function authOptional(req, _res, next) {
   try {
     req.user = jwt.verify(m[1], JWT_SECRET);
   } catch {
-    // игнорим, как будто неавторизован
+    // игнорируем — как неавторизован
   }
   next();
 }
@@ -41,7 +57,7 @@ function authRequired(req, res, next) {
   try {
     req.user = jwt.verify(m[1], JWT_SECRET);
     next();
-  } catch (e) {
+  } catch (_e) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
@@ -60,7 +76,6 @@ const prisma = new PrismaClient();
 
 app.use(cors());
 app.use(express.json());
-// Подключим опциональную аутентификацию глобально (не обязательно)
 app.use(authOptional);
 
 // ======= статика для файлов =======
@@ -114,6 +129,66 @@ app.get("/offices/:officeId/floors", authRequired, async (req, res, next) => {
     next(e);
   }
 });
+
+// DELETE /offices/:officeId/floors/:floorId  -> 204
+app.delete(
+  "/offices/:officeId/floors/:floorId",
+  authRequired,
+  requireRole("WORKSPACE_ADMIN", "PROJECT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const officeId = Number(req.params.officeId);
+      const floorId = Number(req.params.floorId);
+      if (!Number.isInteger(officeId) || !Number.isInteger(floorId)) {
+        return res.status(400).json({ error: "Invalid officeId or floorId" });
+      }
+
+      const floor = await prisma.floor.findFirst({
+        where: { id: floorId, officeId },
+        select: { id: true },
+      });
+      if (!floor) return res.status(404).json({ error: "Floor not found" });
+
+      try {
+        await prisma.floor.delete({ where: { id: floorId } });
+      } catch (_e) {
+        await prisma.$transaction(async (tx) => {
+          const zones = await tx.zone.findMany({
+            where: { floorId },
+            select: { id: true },
+          });
+          const zoneIds = zones.map((z) => z.id);
+
+          if (zoneIds.length) {
+            await tx.zoneObject.deleteMany({
+              where: { zoneId: { in: zoneIds } },
+            });
+            await tx.zoneInventory.deleteMany({
+              where: { zoneId: { in: zoneIds } },
+            });
+          }
+
+          await tx.zone.deleteMany({ where: { floorId } });
+          await tx.floorInventory.deleteMany({ where: { floorId } });
+          await tx.layer.deleteMany({ where: { floorId } });
+
+          await tx.floor.delete({ where: { id: floorId } });
+        });
+      }
+
+      try {
+        const dir = path.join(UPLOAD_ROOT, "floors", String(floorId));
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (_) {}
+
+      return res.status(204).end();
+    } catch (err) {
+      if (err?.code === "P2025")
+        return res.status(404).json({ error: "Floor not found" });
+      next(err);
+    }
+  }
+);
 
 // POST /offices/:officeId/floors  { floorNumber } -> { floorId }
 // + автоматически создаём слой type='firesafe'
@@ -256,7 +331,6 @@ app.get(
 );
 
 // ===================== LAYERS =====================
-// GET /offices/:officeId/floors/:floorId/layers -> { layers:[...] }
 app.get(
   "/offices/:officeId/floors/:floorId/layers",
   authRequired,
@@ -285,7 +359,6 @@ app.get(
   }
 );
 
-// POST /offices/:officeId/floors/:floorId/layers { name } -> { layerId, name }
 app.post(
   "/offices/:officeId/floors/:floorId/layers",
   authRequired,
@@ -306,7 +379,6 @@ app.post(
   }
 );
 
-// GET /offices/:officeId/floors/:floorId/layers/:layerId
 app.get(
   "/offices/:officeId/floors/:floorId/layers/:layerId",
   authRequired,
@@ -353,7 +425,6 @@ app.get(
   }
 );
 
-// DELETE /offices/:officeId/floors/:floorId/layers/:layerId
 app.delete(
   "/offices/:officeId/floors/:floorId/layers/:layerId",
   authRequired,
@@ -377,7 +448,6 @@ app.delete(
 );
 
 // ===================== ZONES (custom layers) =====================
-// POST /.../zones  { name?,description?,status?,coordinates:number[] } -> { zoneId }
 app.post(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones",
   authRequired,
@@ -428,7 +498,6 @@ app.post(
   }
 );
 
-// PATCH /.../zones/:zoneId
 app.patch(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones/:zoneId",
   authRequired,
@@ -472,7 +541,6 @@ app.patch(
   }
 );
 
-// DELETE /.../zones/:zoneId
 app.delete(
   "/offices/:officeId/floors/:floorId/layers/:layerId/zones/:zoneId",
   authRequired,
@@ -493,7 +561,6 @@ app.delete(
 );
 
 // ===================== INVENTORY CATALOG =====================
-// GET /inventory/catalog -> [{id,displayName,iconKey,category}]
 app.get("/inventory/catalog", authRequired, async (_req, res, next) => {
   try {
     const items = await prisma.inventoryCatalog.findMany({
@@ -506,7 +573,6 @@ app.get("/inventory/catalog", authRequired, async (_req, res, next) => {
 });
 
 // ===================== FLOOR INVENTORY =====================
-// GET /offices/:officeId/floors/:floorId/inventory -> [...include catalog]
 app.get(
   "/offices/:officeId/floors/:floorId/inventory",
   authRequired,
@@ -528,7 +594,6 @@ app.get(
   }
 );
 
-// GET /offices/:officeId/floors/:floorId/inventory/with-usage
 app.get(
   "/offices/:officeId/floors/:floorId/inventory/with-usage",
   authRequired,
@@ -570,7 +635,6 @@ app.get(
   }
 );
 
-// POST /offices/:officeId/floors/:floorId/inventory  { catalogId, count }
 app.post(
   "/offices/:officeId/floors/:floorId/inventory",
   authRequired,
@@ -609,7 +673,6 @@ app.post(
   }
 );
 
-// PATCH /offices/:officeId/floors/:floorId/inventory/:id  { count? }
 app.patch(
   "/offices/:officeId/floors/:floorId/inventory/:id",
   authRequired,
@@ -636,7 +699,6 @@ app.patch(
   }
 );
 
-// DELETE /offices/:officeId/floors/:floorId/inventory/:id
 app.delete(
   "/offices/:officeId/floors/:floorId/inventory/:id",
   authRequired,
@@ -647,7 +709,7 @@ app.delete(
         return res.status(400).json({ error: "Invalid id" });
       await prisma.zoneInventory.deleteMany({
         where: { floorInventoryId: id },
-      }); // очистим привязки
+      });
       await prisma.floorInventory.delete({ where: { id } });
       res.status(204).end();
     } catch (e) {
@@ -658,8 +720,7 @@ app.delete(
   }
 );
 
-// ===================== ZONE INVENTORY (привязка к зонам) =====================
-// GET /offices/:officeId/floors/:floorId/zones/:zoneId/inventory
+// ===================== ZONE INVENTORY =====================
 app.get(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory",
   authRequired,
@@ -681,7 +742,6 @@ app.get(
   }
 );
 
-// POST /offices/:officeId/floors/:floorId/zones/:zoneId/inventory  { floorInventoryId, quantity }
 app.post(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory",
   authRequired,
@@ -720,7 +780,6 @@ app.post(
           throw err;
         }
 
-        // уникальная связка
         const exists = await tx.zoneInventory
           .findUnique({
             where: { zoneId_floorInventoryId: { zoneId, floorInventoryId } },
@@ -749,7 +808,6 @@ app.post(
   }
 );
 
-// PATCH /offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id  { quantity }
 app.patch(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id",
   authRequired,
@@ -769,7 +827,6 @@ app.patch(
         });
         if (!row) throw Object.assign(new Error("Not found"), { status: 404 });
 
-        // уже занято другими зонами
         const agg = await tx.zoneInventory.aggregate({
           where: { floorInventoryId: row.floorInventoryId, NOT: { id } },
           _sum: { quantity: true },
@@ -784,10 +841,7 @@ app.patch(
           throw err;
         }
 
-        return tx.zoneInventory.update({
-          where: { id },
-          data: { quantity: { increment: 1 } },
-        });
+        return tx.zoneInventory.update({ where: { id }, data: { quantity } });
       });
 
       res.json(updated);
@@ -798,7 +852,6 @@ app.patch(
   }
 );
 
-// DELETE /offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id
 app.delete(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/inventory/:id",
   authRequired,
@@ -817,8 +870,7 @@ app.delete(
   }
 );
 
-// ===================== ZONE OBJECTS (экземпляры в зоне) =====================
-// Список объектов зоны (с каталогом для иконок/названий)
+// ===================== ZONE OBJECTS =====================
 app.get(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects",
   authRequired,
@@ -833,14 +885,11 @@ app.get(
         orderBy: { id: "asc" },
         include: {
           zoneInventory: {
-            include: {
-              floorInventory: { include: { catalog: true } },
-            },
+            include: { floorInventory: { include: { catalog: true } } },
           },
         },
       });
 
-      // Приведём к удобной структуре (id, coords, rotation, catalog)
       const result = list.map((o) => ({
         id: o.id,
         zoneId: o.zoneId,
@@ -863,7 +912,6 @@ app.get(
   }
 );
 
-// Создать объект в зоне (проверка слотов: placed < quantity)
 app.post(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects",
   authRequired,
@@ -881,7 +929,6 @@ app.post(
         return res.status(400).json({ error: "x and y must be numbers" });
 
       const created = await prisma.$transaction(async (tx) => {
-        // 1) Валидируем привязку к зоне
         const zi = await tx.zoneInventory.findUnique({
           where: { id: zoneInventoryId },
           select: { id: true, zoneId: true },
@@ -896,13 +943,11 @@ app.post(
           throw err;
         }
 
-        // 2) Сначала резервируем слот (quantity += 1)
         await tx.zoneInventory.update({
           where: { id: zoneInventoryId },
           data: { quantity: { increment: 1 } },
         });
 
-        // 3) Создаём экземпляр
         const obj = await tx.zoneObject.create({
           data: {
             zoneId,
@@ -916,9 +961,6 @@ app.post(
         return obj;
       });
 
-      // (не обязательно) можно вернуть "обогащённый" объект как в GET:
-      // const full = await prisma.zoneObject.findUnique({ ...include каталога... })
-      // res.status(201).json(mapToDto(full));
       res.status(201).json(created);
     } catch (e) {
       if (e.status) return res.status(e.status).json({ error: e.message });
@@ -927,7 +969,6 @@ app.post(
   }
 );
 
-// Обновить координаты / угол объекта
 app.patch(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects/:id",
   authRequired,
@@ -958,7 +999,6 @@ app.patch(
       if (Object.keys(data).length === 0)
         return res.status(400).json({ error: "No fields to update" });
 
-      // Валидация принадлежности зоне
       const obj = await prisma.zoneObject.findUnique({
         where: { id },
         select: { zoneId: true },
@@ -977,7 +1017,6 @@ app.patch(
   }
 );
 
-// Удалить объект
 app.delete(
   "/offices/:officeId/floors/:floorId/zones/:zoneId/objects/:id",
   authRequired,
@@ -989,7 +1028,6 @@ app.delete(
         return res.status(400).json({ error: "Invalid ids" });
 
       await prisma.$transaction(async (tx) => {
-        // найдём объект и проверим принадлежность зоне
         const obj = await tx.zoneObject.findUnique({
           where: { id },
           select: { zoneId: true, zoneInventoryId: true },
@@ -1002,18 +1040,14 @@ app.delete(
           throw err;
         }
 
-        // удаляем экземпляр
         await tx.zoneObject.delete({ where: { id } });
 
-        // освобождаем 1 слот в ZoneInventory (но не ниже 0)
         await tx.zoneInventory
           .update({
             where: { id: obj.zoneInventoryId },
             data: { quantity: { decrement: 1 } },
           })
           .catch(async (e) => {
-            // если quantity уже 0 — просто игнорируем (защита от ухода в минус)
-            // можно проверить текущее значение и обновить через set: Math.max(q-1,0)
             const zi = await tx.zoneInventory.findUnique({
               where: { id: obj.zoneInventoryId },
               select: { quantity: true },
@@ -1032,7 +1066,7 @@ app.delete(
   }
 );
 
-// ============ AUTH ============
+// ============ AUTH (переписано под новый токен) ============
 app.post("/auth/register", async (req, res, next) => {
   try {
     const { email, password, role } = req.body || {};
@@ -1042,10 +1076,12 @@ app.post("/auth/register", async (req, res, next) => {
       return res.status(400).json({ error: "password must be >= 6 chars" });
 
     const usersCount = await prisma.user.count();
+    // Первый зарегистрированный юзер — даём PROJECT_ADMIN (или USER, если хочешь строже)
+    const allowed = ["USER", "WORKSPACE_ADMIN", "PROJECT_ADMIN"];
     const finalRole =
       usersCount === 0
-        ? "ADMIN"
-        : ["ADMIN", "MODERATOR", "USER"].includes(role)
+        ? "PROJECT_ADMIN"
+        : allowed.includes(role)
         ? role
         : "USER";
 
@@ -1056,11 +1092,12 @@ app.post("/auth/register", async (req, res, next) => {
         passwordHash: hash,
         role: finalRole,
       },
-      select: { id: true, email: true, role: true },
+      select: { email: true, role: true },
     });
 
-    const token = signToken(created);
-    res.status(201).json({ user: created, token });
+    const accessToken = signAccessToken(created.email, created.role, []);
+    // Возвращаем только токен (без user-объекта)
+    res.status(201).json({ accessToken });
   } catch (e) {
     if (e.code === "P2002")
       return res.status(409).json({ error: "email is taken" });
@@ -1075,36 +1112,32 @@ app.post("/auth/login", async (req, res, next) => {
       return res.status(400).json({ error: "email & password required" });
 
     const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
+      where: { email: String(email).toLowerCase() },
     });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-    const publicUser = { id: user.id, email: user.email, role: user.role };
-    const token = signToken(publicUser);
-    res.json({ user: publicUser, token });
+    const accessToken = signAccessToken(user.email, user.role, []);
+    // Только токен, как требует фронт
+    res.json({ accessToken });
   } catch (e) {
     next(e);
   }
 });
 
 app.get("/me", authRequired, (req, res) => {
+  // отдаём то, что внутри токена (payload)
   res.json({ user: req.user });
 });
 
-// ============ OFFICES CRUD ============
-/**
- * Модель: Office { id, name, address, city, country }
- * Доступ:
- *  - GET /offices           (публично)
- *  - POST /offices          (ADMIN|MODERATOR)
- *  - PUT /offices/:id       (ADMIN|MODERATOR)
- *  - DELETE /offices/:id    (ADMIN|MODERATOR) — если нет привязанных floors (или каскадно)
- */
+app.post("/auth/logout", authRequired, async (_req, res) => {
+  // Без refresh/tokenVersion отозвать access невозможно — клиент сам забывает токен
+  res.json({ message: "Logged out" });
+});
 
-// GET /offices -> { offices: [...] }
+// ============ OFFICES CRUD ============
 app.get("/offices", authRequired, async (_req, res, next) => {
   try {
     const offices = await prisma.office.findMany({
@@ -1117,17 +1150,16 @@ app.get("/offices", authRequired, async (_req, res, next) => {
         country: true,
       },
     });
-    res.json({ offices });
+    res.json(offices);
   } catch (e) {
     next(e);
   }
 });
 
-// POST /offices { name, address, city, country } -> { id }
 app.post(
   "/offices",
   authRequired,
-  requireRole("ADMIN", "MODERATOR"),
+  requireRole("WORKSPACE_ADMIN", "PROJECT_ADMIN"),
   async (req, res, next) => {
     try {
       const { name, address, city, country } = req.body || {};
@@ -1156,11 +1188,10 @@ app.post(
   }
 );
 
-// PUT /offices/:id { name?, address?, city?, country? } -> { updated: true }
 app.put(
   "/offices/:id",
   authRequired,
-  requireRole("ADMIN", "MODERATOR"),
+  requireRole("WORKSPACE_ADMIN", "PROJECT_ADMIN"),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1186,19 +1217,16 @@ app.put(
   }
 );
 
-// DELETE /offices/:id -> 204
 app.delete(
   "/offices/:id",
   authRequired,
-  requireRole("ADMIN", "MODERATOR"),
+  requireRole("WORKSPACE_ADMIN", "PROJECT_ADMIN"),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isInteger(id))
         return res.status(400).json({ error: "Invalid id" });
 
-      // Если у тебя настроен onDelete: Cascade у Floor.officeId, можно удалять прямо.
-      // Если нет — сначала проверим, что нет этажей (или отказать).
       const floorsCount = await prisma.floor.count({ where: { officeId: id } });
       if (floorsCount > 0)
         return res
@@ -1214,12 +1242,6 @@ app.delete(
     }
   }
 );
-
-app.post("/auth/logout", authRequired, async (req, res) => {
-  // Без refresh или tokenVersion сервер не может "отозвать" токен
-  // просто отвечаем OK, а клиент удаляет свой токен
-  res.json({ message: "Logged out" });
-});
 
 // ===================== START =====================
 const PORT = Number(process.env.PORT) || 3000;
