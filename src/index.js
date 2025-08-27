@@ -1067,6 +1067,46 @@ app.delete(
 );
 
 // ============ AUTH (переписано под новый токен) ============
+app.get(
+  "/auth/users",
+  authRequired,
+  requireRole("WORKSPACE_ADMIN", "PROJECT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const { q, limit = "50", offset = "0" } = req.query;
+
+      const take = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+      const skip = Math.max(parseInt(offset, 10) || 0, 0);
+
+      const where = q
+        ? {
+            email: {
+              contains: String(q),
+              mode: "insensitive",
+            },
+          }
+        : undefined;
+
+      const [users, total] = await Promise.all([
+        prisma.user.findMany({
+          where,
+          select: { id: true, email: true, role: true },
+          orderBy: { id: "desc" }, // стабильный порядок без предположений о createdAt
+          skip,
+          take,
+        }),
+        prisma.user.count({ where }),
+      ]);
+
+      res.json({
+        users,
+      });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
 app.post("/auth/register", async (req, res, next) => {
   try {
     const { email, password, role } = req.body || {};
